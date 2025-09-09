@@ -17,7 +17,17 @@ interface MembershipRegistrationProps {
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function MembershipRegistration({ tabId: _tabId }: MembershipRegistrationProps) {
-  const { registerMembership, isInitialized, isStarted, error, isLoading, getPriceForRateLimit } = useRLN();
+  const { 
+    registerMembership, 
+    isInitialized, 
+    isStarted, 
+    error, 
+    isLoading, 
+    getPriceForRateLimit,
+    tokenApprovalStatus,
+    checkTokenApproval,
+    approveTokens
+  } = useRLN();
   const { isConnected, chainId } = useWallet();
 
   // Replace slider state with discrete options
@@ -68,6 +78,13 @@ export function MembershipRegistration({ tabId: _tabId }: MembershipRegistration
       toast.error(error);
     }
   }, [error]);
+
+  // Check token approval when rate limit changes and RLN is ready
+  useEffect(() => {
+    if (isConnected && isInitialized && isStarted && isLineaSepolia) {
+      checkTokenApproval(rateLimit);
+    }
+  }, [rateLimit, isConnected, isInitialized, isStarted, isLineaSepolia]); // Remove checkTokenApproval from deps
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -142,10 +159,36 @@ export function MembershipRegistration({ tabId: _tabId }: MembershipRegistration
           {/* Network Warning */}
           {isConnected && !isLineaSepolia && (
             <div className="mb-4 p-3 border border-destructive/20 bg-destructive/5 rounded">
-              <p className="text-sm text-destructive font-mono flex items-center">
+              <p className="text-sm text-destructive font-mono flex items-center mb-2">
                 <span className="mr-2">⚠️</span>
                 <span>{membershipRegistration.networkWarning}</span>
               </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={async () => {
+                  const { ensureLineaSepoliaNetwork } = await import('../../../utils/network');
+                  const provider = new (await import('ethers')).ethers.providers.Web3Provider(window.ethereum);
+                  const signer = provider.getSigner();
+                  
+                  try {
+                    const switched = await ensureLineaSepoliaNetwork(signer);
+                    if (switched) {
+                      // Trigger a page refresh to reinitialize everything
+                      window.location.reload();
+                    } else {
+                      alert('Failed to switch network. Please switch manually in MetaMask.');
+                    }
+                  } catch (err) {
+                    console.error('Network switch error:', err);
+                    alert('Error switching network. Please try manually in MetaMask.');
+                  }
+                }}
+                className="text-xs"
+              >
+                Switch to Linea Sepolia
+              </Button>
             </div>
           )}
           
@@ -246,6 +289,78 @@ export function MembershipRegistration({ tabId: _tabId }: MembershipRegistration
                       <>Token spend required: <span>{price}</span> WTT</>
                     )}
                   </div>
+                  
+                  {/* Token Status - Combined Approval & Balance */}
+                  {isConnected && isLineaSepolia && (
+                    <div className="mt-4 p-3 border rounded-md bg-terminal-background/30">
+                      <div className="text-sm font-mono mb-2">
+                        <span className="text-primary">Token Status</span>
+                      </div>
+                      
+                      {tokenApprovalStatus.isChecking ? (
+                        <div className="text-xs text-muted-foreground font-mono">
+                          <span className="mr-2">🔄</span>
+                          Checking token status...
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {/* Approval Status */}
+                          {tokenApprovalStatus.isApproved === true ? (
+                            <div className="text-xs text-success-DEFAULT font-mono">
+                              <span className="mr-2">✅</span>
+                              Tokens approved for spending
+                            </div>
+                          ) : tokenApprovalStatus.isApproved === false ? (
+                            <div className="text-xs text-warning-DEFAULT font-mono">
+                              <span className="mr-2">⚠️</span>
+                              Token approval required
+                            </div>
+                          ) : null}
+                          
+                          {/* Balance Status */}
+                          {tokenApprovalStatus.requiredAmount && tokenApprovalStatus.tokenBalance !== null && (
+                            <div className="text-xs font-mono">
+                              {tokenApprovalStatus.hasEnoughBalance === false ? (
+                                <div className="text-destructive">
+                                  <span className="mr-2">❌</span>
+                                  Balance: {tokenApprovalStatus.tokenBalance} WTT (need {tokenApprovalStatus.requiredAmount} WTT)
+                                </div>
+                              ) : tokenApprovalStatus.hasEnoughBalance === true ? (
+                                <div className="text-success-DEFAULT">
+                                  <span className="mr-2">✅</span>
+                                  Balance: {tokenApprovalStatus.tokenBalance} WTT (sufficient)
+                                </div>
+                              ) : (
+                                <div className="text-muted-foreground">
+                                  Required: {tokenApprovalStatus.requiredAmount} WTT
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          
+                          {/* Action Button */}
+                          {tokenApprovalStatus.isApproved === false && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={async () => {
+                                const result = await approveTokens();
+                                if (!result.success && result.error) {
+                                  setRegistrationResult({ success: false, error: result.error });
+                                }
+                              }}
+                              disabled={tokenApprovalStatus.isChecking}
+                              className="w-full"
+                            >
+                              {tokenApprovalStatus.isChecking ? 'Approving...' : 'Approve Tokens'}
+                            </Button>
+                          )}
+                          
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="space-y-2">
@@ -287,10 +402,13 @@ export function MembershipRegistration({ tabId: _tabId }: MembershipRegistration
 
                 <Button
                   type="submit"
-                  disabled={isRegistering}
+                  disabled={isRegistering || (tokenApprovalStatus.isApproved === false) || (tokenApprovalStatus.hasEnoughBalance === false)}
                   className="w-full"
                 >
-                  {isRegistering ? membershipRegistration.form.registeringButton : membershipRegistration.form.registerButton}
+                  {isRegistering ? membershipRegistration.form.registeringButton : 
+                   (tokenApprovalStatus.isApproved === false ? 'Approve tokens first' :
+                    tokenApprovalStatus.hasEnoughBalance === false ? 'Get test tokens first' :
+                    membershipRegistration.form.registerButton)}
                 </Button>
               </form>
             )}
